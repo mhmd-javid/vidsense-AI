@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# AI models (large files)
+models/
+
+# Runtime data
+data/
+videos/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+
+# Logs
+*.log
