@@ -53,11 +53,11 @@ vad:
 # ------------------------------------------------------------------- ASR ----
 asr:
   # tiny | base | small | medium | large-v3   (medium is the quality/speed sweet spot on CPU)
-  model_size: medium
+  model_size: AmirMohseni/whisper-large-v3-persian-ct2-int8
   device: auto                  # auto -> CUDA if usable, else CPU
   compute_type: int8            # int8 (cpu) | int8_float16 / float16 (gpu)
   language: fa                  # force Persian; null = auto-detect per file
-  batch_size: 8                 # batched inference window count (lower if RAM-bound)
+  batch_size: 1                 # batched inference window count (lower if RAM-bound)
   beam_size: 5
   best_of: 5
   patience: 1.0
