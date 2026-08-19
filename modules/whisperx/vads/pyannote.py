@@ -11,9 +11,9 @@ from pyannote.audio.pipelines.utils import PipelineModel
 from pyannote.core import Annotation, SlidingWindowFeature
 from pyannote.core import Segment
 
-from whisperx.diarize import Segment as SegmentX
-from whisperx.vads.vad import Vad
-from whisperx.log_utils import get_logger
+from modules.whisperx.diarize import Segment as SegmentX
+from modules.whisperx.vads.vad import Vad
+from modules.whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 

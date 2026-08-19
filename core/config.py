@@ -4,12 +4,15 @@ Reads ``config/config.yaml`` into dataclasses so the rest of the codebase gets
 attribute access + editor autocomplete instead of raw dict lookups. Paths are
 resolved to absolute locations under the project root, and the data
 directories are created on load.
+
+The sections mirror the pipeline stages: download -> audio -> preprocess -> vad
+-> asr -> alignment -> diarization -> postprocess -> confidence.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import yaml
 
@@ -36,71 +39,108 @@ class PathsSection:
 
 
 @dataclass
+class DownloadSection:
+    max_height: int = 720
+    retries: int = 3
+    socket_timeout: int = 30
+    aparat_direct_api: bool = True
+    insecure_ssl: bool = True
+
+
+@dataclass
+class AudioSection:
+    sample_rate: int = 16000
+
+
+@dataclass
+class PreprocessSection:
+    enabled: bool = True
+    loudnorm: bool = True
+    highpass_hz: int = 0
+    denoise: bool = False
+
+
+@dataclass
+class VADSection:
+    method: str = "pyannote"
+    onset: float = 0.500
+    offset: float = 0.363
+    chunk_size: int = 30
+    model_fp: Optional[str] = None
+
+
+@dataclass
 class ASRSection:
-    model_size: str = "small"
+    model_size: str = "medium"
     device: str = "auto"
     compute_type: str = "int8"
-    language: Optional[str] = None
+    language: Optional[str] = "fa"
+    batch_size: int = 8
     beam_size: int = 5
-    vad_filter: bool = True
+    best_of: int = 5
+    patience: float = 1.0
+    temperatures: List[float] = field(
+        default_factory=lambda: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    )
+    compression_ratio_threshold: float = 2.4
+    log_prob_threshold: float = -1.0
+    no_speech_threshold: float = 0.6
+    condition_on_previous_text: bool = False
+    initial_prompt: Optional[str] = None
+    suppress_numerals: bool = False
     download_root: str = "models"
 
 
 @dataclass
-class ChunkingSection:
-    target_seconds: float = 30.0
-    max_seconds: float = 45.0
-    max_chars: int = 700
-    min_chars: int = 40
+class AlignmentSection:
+    enabled: bool = True
+    model_name: Optional[str] = None
+    interpolate_method: str = "nearest"
+    return_char_alignments: bool = False
 
 
 @dataclass
-class EmbeddingSection:
-    model_name: str = "intfloat/multilingual-e5-small"
-    device: str = "cpu"
-    batch_size: int = 16
-    normalize: bool = True
-    query_prefix: str = "query: "
-    passage_prefix: str = "passage: "
+class DiarizationSection:
+    enabled: bool = False
+    model_name: str = "pyannote/speaker-diarization-community-1"
+    hf_token: Optional[str] = None
+    num_speakers: Optional[int] = None
+    min_speakers: Optional[int] = None
+    max_speakers: Optional[int] = None
 
 
 @dataclass
-class VectorStoreSection:
-    backend: str = "numpy"
-    top_k: int = 5
+class PostprocessSection:
+    enabled: bool = True
+    arabic_to_persian: bool = True
+    fix_zwnj: bool = True
+    normalize_punctuation: bool = True
+    collapse_repeats: bool = True
+    persian_digits: bool = False
 
 
 @dataclass
-class LLMSection:
-    backend: str = "ollama"
-    model: str = "qwen2.5:3b-instruct"
-    host: str = "http://localhost:11434"
-    temperature: float = 0.2
-    num_ctx: int = 4096
-    max_tokens: int = 1024
-    keep_alive: str = "5m"
-    request_timeout: int = 180
-
-
-@dataclass
-class RAGSection:
-    top_k: int = 5
-    min_score: float = 0.10
-    language: str = "auto"
+class ConfidenceSection:
+    low_threshold: float = 0.5
+    weight_logprob: float = 0.6
+    weight_word_score: float = 0.4
 
 
 @dataclass
 class Config:
     app: AppSection = field(default_factory=AppSection)
     paths: PathsSection = field(default_factory=PathsSection)
+    download: DownloadSection = field(default_factory=DownloadSection)
+    audio: AudioSection = field(default_factory=AudioSection)
+    preprocess: PreprocessSection = field(default_factory=PreprocessSection)
+    vad: VADSection = field(default_factory=VADSection)
     asr: ASRSection = field(default_factory=ASRSection)
-    chunking: ChunkingSection = field(default_factory=ChunkingSection)
-    embedding: EmbeddingSection = field(default_factory=EmbeddingSection)
-    vectorstore: VectorStoreSection = field(default_factory=VectorStoreSection)
-    llm: LLMSection = field(default_factory=LLMSection)
-    rag: RAGSection = field(default_factory=RAGSection)
+    alignment: AlignmentSection = field(default_factory=AlignmentSection)
+    diarization: DiarizationSection = field(default_factory=DiarizationSection)
+    postprocess: PostprocessSection = field(default_factory=PostprocessSection)
+    confidence: ConfidenceSection = field(default_factory=ConfidenceSection)
 
-    # -- absolute, resolved paths (filled in __post_init__) -----------------
+    # -- absolute, resolved paths ------------------------------------------
     @property
     def db_path_abs(self) -> Path:
         return resolve_path(self.app.db_path)
@@ -156,12 +196,15 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg = Config(
         app=_build_section(AppSection, raw.get("app", {})),
         paths=_build_section(PathsSection, raw.get("paths", {})),
+        download=_build_section(DownloadSection, raw.get("download", {})),
+        audio=_build_section(AudioSection, raw.get("audio", {})),
+        preprocess=_build_section(PreprocessSection, raw.get("preprocess", {})),
+        vad=_build_section(VADSection, raw.get("vad", {})),
         asr=_build_section(ASRSection, raw.get("asr", {})),
-        chunking=_build_section(ChunkingSection, raw.get("chunking", {})),
-        embedding=_build_section(EmbeddingSection, raw.get("embedding", {})),
-        vectorstore=_build_section(VectorStoreSection, raw.get("vectorstore", {})),
-        llm=_build_section(LLMSection, raw.get("llm", {})),
-        rag=_build_section(RAGSection, raw.get("rag", {})),
+        alignment=_build_section(AlignmentSection, raw.get("alignment", {})),
+        diarization=_build_section(DiarizationSection, raw.get("diarization", {})),
+        postprocess=_build_section(PostprocessSection, raw.get("postprocess", {})),
+        confidence=_build_section(ConfidenceSection, raw.get("confidence", {})),
     )
     cfg.ensure_dirs()
     return cfg

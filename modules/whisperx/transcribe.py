@@ -6,13 +6,13 @@ import warnings
 import numpy as np
 import torch
 
-from whisperx.alignment import align, load_align_model
-from whisperx.asr import load_model
-from whisperx.audio import load_audio
-from whisperx.diarize import DiarizationPipeline, assign_word_speakers
-from whisperx.schema import AlignedTranscriptionResult, TranscriptionResult
-from whisperx.utils import LANGUAGES, TO_LANGUAGE_CODE, get_writer
-from whisperx.log_utils import get_logger
+from modules.whisperx.alignment import align, load_align_model
+from modules.whisperx.asr import load_model
+from modules.whisperx.audio import load_audio
+from modules.whisperx.diarize import DiarizationPipeline, assign_word_speakers
+from modules.whisperx.schema import AlignedTranscriptionResult, TranscriptionResult
+from modules.whisperx.utils import LANGUAGES, TO_LANGUAGE_CODE, get_writer
+from modules.whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 

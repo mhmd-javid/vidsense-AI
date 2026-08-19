@@ -1,39 +1,39 @@
-"""SQLite persistence layer (source of truth for the MVP).
+"""SQLite persistence layer (metadata + status; JSON is the transcript).
 
-Stores video metadata, transcript pointer + full text, chunks, embeddings
-(as float32 blobs) and processing status. The access goes through a single
-``Database`` class so migrating to PostgreSQL later means reimplementing this
-one class, not touching the pipeline.
+The canonical transcript is the JSON file at ``data/transcripts/<id>.json``.
+This table holds video metadata, processing status, quality metrics, and
+pointers to the transcript / subtitle files — enough to list and re-open
+past runs without re-reading every JSON. All access goes through one
+``Database`` class so a later move to Postgres touches only this file.
 
 Schema
 ------
 videos(video_id PK, title, source, source_type, filepath, audio_path,
-       duration, language, language_prob, status, error, transcript_path,
-       full_text, extractor, created_at, updated_at)
-chunks(id PK, video_id FK, chunk_index, start, end, text,
-       embedding BLOB, embedding_dim, embedding_model)
+       duration, language, language_prob, num_speakers, quality_score,
+       status, error, transcript_path, srt_path, vtt_path, full_text,
+       extractor, created_at, updated_at)
 """
 from __future__ import annotations
 
 import sqlite3
 import threading
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
-
-import numpy as np
+from typing import Any, Dict, List, Optional
 
 from core.utils import ensure_dir, get_logger
 
 logger = get_logger(__name__)
 
-# Processing status values (kept as plain strings for portability).
+# Processing status values (plain strings for portability), one per heavy stage.
 STATUS_PENDING = "pending"
 STATUS_DOWNLOADING = "downloading"
 STATUS_EXTRACTING = "extracting"
+STATUS_PREPROCESSING = "preprocessing"
+STATUS_VAD = "vad"
 STATUS_TRANSCRIBING = "transcribing"
-STATUS_CHUNKING = "chunking"
-STATUS_EMBEDDING = "embedding"
+STATUS_ALIGNING = "aligning"
+STATUS_DIARIZING = "diarizing"
+STATUS_POSTPROCESSING = "postprocessing"
 STATUS_READY = "ready"
 STATUS_ERROR = "error"
 
@@ -49,54 +49,33 @@ CREATE TABLE IF NOT EXISTS videos (
     duration        REAL,
     language        TEXT,
     language_prob   REAL,
+    num_speakers    INTEGER,
+    quality_score   REAL,
     status          TEXT NOT NULL DEFAULT 'pending',
     error           TEXT,
     transcript_path TEXT,
+    srt_path        TEXT,
+    vtt_path        TEXT,
     full_text       TEXT,
     extractor       TEXT,
     created_at      TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
 );
-
-CREATE TABLE IF NOT EXISTS chunks (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    video_id        TEXT NOT NULL,
-    chunk_index     INTEGER NOT NULL,
-    start           REAL NOT NULL,
-    end             REAL NOT NULL,
-    text            TEXT NOT NULL,
-    embedding       BLOB,
-    embedding_dim   INTEGER,
-    embedding_model TEXT,
-    FOREIGN KEY (video_id) REFERENCES videos(video_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_chunks_video ON chunks(video_id);
 """
 
-
-@dataclass
-class ChunkRow:
-    id: int
-    video_id: str
-    chunk_index: int
-    start: float
-    end: float
-    text: str
-    embedding: Optional[np.ndarray]
-    embedding_model: Optional[str]
-
-
-def _vec_to_blob(vec: Optional[np.ndarray]) -> Optional[bytes]:
-    if vec is None:
-        return None
-    return np.asarray(vec, dtype=np.float32).tobytes()
-
-
-def _blob_to_vec(blob: Optional[bytes]) -> Optional[np.ndarray]:
-    if blob is None:
-        return None
-    return np.frombuffer(blob, dtype=np.float32)
+# Columns expected on ``videos``, with the type used when back-filling an older
+# database via ALTER TABLE. No non-constant defaults appear here: SQLite forbids
+# ``ADD COLUMN ... DEFAULT datetime('now')``, so ``created_at``/``updated_at`` are
+# managed explicitly by ``upsert_video`` instead of a column default on upgrade.
+_EXPECTED_COLUMNS: Dict[str, str] = {
+    "title": "TEXT", "source": "TEXT", "source_type": "TEXT",
+    "filepath": "TEXT", "audio_path": "TEXT", "duration": "REAL",
+    "language": "TEXT", "language_prob": "REAL", "num_speakers": "INTEGER",
+    "quality_score": "REAL", "status": "TEXT", "error": "TEXT",
+    "transcript_path": "TEXT", "srt_path": "TEXT", "vtt_path": "TEXT",
+    "full_text": "TEXT", "extractor": "TEXT",
+    "created_at": "TEXT", "updated_at": "TEXT",
+}
 
 
 class Database:
@@ -110,9 +89,29 @@ class Database:
             str(self.db_path), check_same_thread=False, timeout=30
         )
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON;")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Idempotently add columns missing from an older ``videos`` table.
+
+        ``CREATE TABLE IF NOT EXISTS`` never alters a table that already exists,
+        so a database created by an earlier schema (e.g. the pre-transcript RAG
+        build) is missing newer columns such as ``num_speakers`` /
+        ``quality_score`` / ``srt_path`` / ``vtt_path``. Back-fill them here so
+        ``upsert_video`` cannot fail with "no such column". Runs on every open;
+        no-op once the schema is current.
+        """
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(videos)")}
+        missing = [(c, t) for c, t in _EXPECTED_COLUMNS.items() if c not in existing]
+        for col, sqltype in missing:
+            self._conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {sqltype}")
+        if missing:
+            logger.info(
+                "Migrated 'videos' table: added %d column(s): %s",
+                len(missing), ", ".join(c for c, _ in missing),
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -162,70 +161,5 @@ class Database:
 
     def delete_video(self, video_id: str) -> None:
         with self._lock:
-            self._conn.execute("DELETE FROM chunks WHERE video_id=?", (video_id,))
             self._conn.execute("DELETE FROM videos WHERE video_id=?", (video_id,))
             self._conn.commit()
-
-    # -------------------------------------------------------------- chunks --
-    def replace_chunks(
-        self,
-        video_id: str,
-        chunks: Sequence[Dict[str, Any]],
-        embeddings: Optional[np.ndarray] = None,
-        embedding_model: Optional[str] = None,
-    ) -> None:
-        """Delete existing chunks for the video and insert the new set.
-
-        ``chunks`` is a list of dicts with start/end/text (and optional
-        chunk_index). ``embeddings`` is an aligned (N, dim) array or None.
-        """
-        with self._lock:
-            self._conn.execute("DELETE FROM chunks WHERE video_id=?", (video_id,))
-            for i, ch in enumerate(chunks):
-                emb = None if embeddings is None else embeddings[i]
-                self._conn.execute(
-                    """INSERT INTO chunks
-                       (video_id, chunk_index, start, end, text,
-                        embedding, embedding_dim, embedding_model)
-                       VALUES (?,?,?,?,?,?,?,?)""",
-                    (
-                        video_id,
-                        int(ch.get("index", i)),
-                        float(ch["start"]),
-                        float(ch["end"]),
-                        ch["text"],
-                        _vec_to_blob(emb),
-                        int(emb.shape[0]) if emb is not None else None,
-                        embedding_model,
-                    ),
-                )
-            self._conn.commit()
-
-    def get_chunks(self, video_id: str, with_embeddings: bool = True) -> List[ChunkRow]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM chunks WHERE video_id=? ORDER BY chunk_index",
-                (video_id,),
-            ).fetchall()
-        out: List[ChunkRow] = []
-        for r in rows:
-            out.append(
-                ChunkRow(
-                    id=r["id"],
-                    video_id=r["video_id"],
-                    chunk_index=r["chunk_index"],
-                    start=r["start"],
-                    end=r["end"],
-                    text=r["text"],
-                    embedding=_blob_to_vec(r["embedding"]) if with_embeddings else None,
-                    embedding_model=r["embedding_model"],
-                )
-            )
-        return out
-
-    def count_chunks(self, video_id: str) -> int:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM chunks WHERE video_id=?", (video_id,)
-            ).fetchone()
-        return int(row["n"]) if row else 0

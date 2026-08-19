@@ -1,42 +1,48 @@
 # =============================================================================
-# VideoAI — Python dependencies (Python 3.11, Windows)
+# VidSense — Python dependencies (Python 3.11, Windows)
 # =============================================================================
-# IMPORTANT — install PyTorch (CPU build) FIRST, from the CPU wheel index, so
-# pip does not pull the ~2.5 GB CUDA build. Embeddings run on CPU here to keep
-# the 4 GB of VRAM free for ASR and the LLM.
+# INSTALL ORDER MATTERS. Install the CPU build of PyTorch FIRST, from the CPU
+# wheel index, so pip does not pull the multi-GB CUDA build. Everything here
+# runs on CPU by default (device: auto falls back to CPU when no CUDA runtime
+# is present), which keeps the 4 GB of VRAM on the T1000 free.
 #
-#   python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+#   python -m pip install torch==2.9.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cpu
 #   python -m pip install -r requirements.txt
 #
-# The pinned versions below are what this MVP was built and tested against.
+# The heavy speech models (ASR / wav2vec2 alignment / pyannote diarization) are
+# NEVER co-resident: the pipeline loads one, uses it, releases it, then loads
+# the next (see modules/workflow/pipeline.py).
 # =============================================================================
 
 # --- Video download & audio ---------------------------------------------------
-yt-dlp==2026.7.4
-imageio-ffmpeg==0.6.0        # bundles a static ffmpeg binary (no system install)
-av==18.1.0                   # PyAV: probing / decoding fallback
+yt-dlp>=2025.1.1             # YouTube / Aparat / generic extractor
+imageio-ffmpeg>=0.5.1        # bundles a static ffmpeg binary (no system install)
+av>=12.0.0                   # PyAV: media duration probe
+requests>=2.31.0            # Aparat direct-API resolver
 
-# --- ASR (speech-to-text) -----------------------------------------------------
-faster-whisper==1.2.1
-ctranslate2==4.8.1
+# --- ASR (speech-to-text) — faster-whisper via CTranslate2 --------------------
+faster-whisper>=1.1.0
+ctranslate2>=4.4.0
 
-# --- Embeddings ---------------------------------------------------------------
-sentence-transformers==3.4.1
-transformers==4.57.6
-tokenizers==0.22.2
-huggingface_hub==0.36.2
-# torch is installed separately from the CPU index (see header). Pinned target:
-# torch==2.13.0+cpu
+# --- Word-level alignment + diarization (WhisperX engine deps) -----------------
+# torch / torchaudio are installed separately from the CPU index (see header):
+#   torch==2.9.1  torchaudio==2.9.1
+transformers>=4.44.0        # Wav2Vec2 alignment model + Pipeline base class
+pyannote.audio>=4.0.0       # VAD (local weights) + optional diarization (community-1 API)
+omegaconf>=2.3.0            # REQUIRED to deserialize the pyannote VAD checkpoint
+huggingface_hub>=0.24.0
+nltk>=3.8.1                 # sentence splitting for alignment
+pandas>=2.0.0               # diarization / VAD segment tables
 
-# --- Vector math / storage ----------------------------------------------------
-numpy==2.4.6
-scikit-learn==1.9.0          # cosine_similarity helper (optional but handy)
-
-# --- LLM client (Ollama over HTTP) --------------------------------------------
-httpx==0.28.1
+# --- Numerics -----------------------------------------------------------------
+# pyannote.core>=6 requires numpy>=2; torch 2.9 / ctranslate2 4.8 / faster-whisper
+# 1.2 all support numpy 2, so we run on the 2.x line (verified: no ABI break).
+numpy>=2.0
 
 # --- UI -----------------------------------------------------------------------
-streamlit==1.61.1
+# streamlit needs protobuf<6; pyannote's telemetry pulls protobuf 7, so pin it back.
+protobuf<6
+streamlit>=1.36.0
 
 # --- Config -------------------------------------------------------------------
-PyYAML==6.0.3
+PyYAML>=6.0

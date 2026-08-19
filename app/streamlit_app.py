@@ -1,14 +1,15 @@
-"""VideoAI — Streamlit UI.
+"""VidSense — Streamlit UI for the Persian transcription pipeline.
 
 Two sections:
-  1. Process Video  — URL or upload, live pipeline status, clear errors.
-  2. Chat With Video — question -> grounded answer + timestamp references +
-     the transcript chunks that were used.
+  1. Process Video — URL or upload, live staged pipeline progress.
+  2. Transcript    — RTL segment view with speaker chips, time ranges,
+     low-confidence highlighting, and JSON / SRT / VTT downloads.
 
 Run with:  streamlit run app/streamlit_app.py
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -20,23 +21,35 @@ if str(ROOT) not in sys.path:
 import streamlit as st  # noqa: E402
 
 from core.services import build_services  # noqa: E402
-from core.utils import format_timestamp  # noqa: E402
 from modules.ingestion.downloader import DownloadError  # noqa: E402
 from modules.storage import db as dbmod  # noqa: E402
 from modules.workflow.pipeline import STAGES  # noqa: E402
 
-st.set_page_config(page_title="VideoAI — Chat with your video", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="VidSense — Persian transcription", page_icon="🎧", layout="wide")
 
 
-@st.cache_resource(show_spinner="Loading models & services…")
+@st.cache_resource(show_spinner="Loading services…")
 def get_services():
     return build_services()
 
 
-def rtl_markdown(text: str):
-    """Render text with automatic direction (RTL for Persian, LTR otherwise)."""
+def _mmss(seconds) -> str:
+    try:
+        s = int(float(seconds))
+    except (TypeError, ValueError):
+        return "00:00"
+    h, m, s = s // 3600, (s % 3600) // 60, s % 60
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def rtl_markdown(text: str, low: bool = False):
+    """Render text with automatic direction (RTL for Persian)."""
     safe = (text or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-    st.markdown(f"<div dir='auto' style='line-height:1.9'>{safe}</div>", unsafe_allow_html=True)
+    bg = "background:#4a3a00;padding:4px 8px;border-radius:6px;" if low else ""
+    st.markdown(
+        f"<div dir='auto' style='line-height:1.9;{bg}'>{safe}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 svc = get_services()
@@ -45,24 +58,15 @@ svc = get_services()
 # Sidebar
 # --------------------------------------------------------------------------- #
 with st.sidebar:
-    st.title("🎬 VideoAI")
-    st.caption("Local-first video intelligence · ASR → RAG → local LLM")
-
-    ollama_ok = svc.llm.is_available()
-    model_ok = ollama_ok and svc.llm.model_available()
-    if model_ok:
-        st.success(f"Ollama ready · {svc.llm.model}")
-    elif ollama_ok:
-        st.warning(f"Ollama up, but model '{svc.llm.model}' is missing.\n\n"
-                   f"Run:  `ollama pull {svc.llm.model}`")
-    else:
-        st.error("Ollama not reachable. Start it (`ollama serve`) to enable chat.")
+    st.title("🎧 VidSense")
+    st.caption("Local-first Persian speech-to-text · VAD → ASR → align → diarize")
 
     with st.expander("Configuration", expanded=False):
         st.write(f"**ASR:** `{svc.cfg.asr.model_size}` / `{svc.cfg.asr.device}` / `{svc.cfg.asr.compute_type}`")
-        st.write(f"**Embeddings:** `{svc.cfg.embedding.model_name}` @ `{svc.cfg.embedding.device}`")
-        st.write(f"**LLM:** `{svc.cfg.llm.model}`")
-        st.write(f"**Vector store:** `{svc.cfg.vectorstore.backend}`  ·  top_k=`{svc.cfg.rag.top_k}`")
+        st.write(f"**Language:** `{svc.cfg.asr.language or 'auto'}`")
+        st.write(f"**VAD:** `{svc.cfg.vad.method}` · chunk `{svc.cfg.vad.chunk_size}s`")
+        st.write(f"**Alignment:** `{'on' if svc.cfg.alignment.enabled else 'off'}`")
+        st.write(f"**Diarization:** `{'on' if svc.cfg.diarization.enabled else 'off'}`")
 
     st.divider()
     st.subheader("Processed videos")
@@ -71,18 +75,22 @@ with st.sidebar:
         st.caption("None yet — process a video to begin.")
     for v in videos:
         icon = "✅" if v["status"] == dbmod.STATUS_READY else ("⚠️" if v["status"] == dbmod.STATUS_ERROR else "⏳")
-        st.write(f"{icon} {v['title'][:36]}  \n`{v['status']}` · {svc.db.count_chunks(v['video_id'])} chunks")
+        q = v.get("quality_score")
+        meta = f"`{v['status']}`"
+        if q is not None:
+            meta += f" · q={q:.2f}"
+        st.write(f"{icon} {(v['title'] or v['video_id'])[:36]}  \n{meta}")
 
 
 # --------------------------------------------------------------------------- #
-# Main tabs
+# Tabs
 # --------------------------------------------------------------------------- #
-tab_process, tab_chat = st.tabs(["📥  Process Video", "💬  Chat With Video"])
+tab_process, tab_transcript = st.tabs(["📥  Process Video", "📄  Transcript"])
 
 # ----- Tab 1: Process ------------------------------------------------------- #
 with tab_process:
     st.header("Process a video")
-    st.caption("Provide a URL (YouTube / Aparat / others) **or** upload a file. "
+    st.caption("Provide a URL (YouTube / Aparat / direct link) **or** upload a file. "
                "If a download fails, just upload the file manually.")
 
     col_url, col_up = st.columns(2)
@@ -92,9 +100,8 @@ with tab_process:
         upload = st.file_uploader("…or upload a video/audio file",
                                   type=["mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "m4a"])
 
-    start = st.button("▶  Start processing", type="primary", use_container_width=True)
+    start = st.button("▶  Start transcription", type="primary", use_container_width=True)
 
-    # Render the target pipeline as a reference checklist.
     with st.expander("Pipeline stages", expanded=False):
         st.markdown("  →  ".join(f"**{label}**" for _, label in STAGES))
 
@@ -115,7 +122,7 @@ with tab_process:
                     prog.progress(min(1.0, overall), text=msg)
                 logs.append(f"- {msg}")
                 with log_box:
-                    log_box.markdown("\n".join(logs[-10:]))
+                    log_box.markdown("\n".join(logs[-12:]))
 
             try:
                 if upload is not None:
@@ -128,69 +135,81 @@ with tab_process:
 
             if result and result.success:
                 prog.progress(1.0, text="Ready ✅")
-                svc.rag.invalidate(result.video_id)
                 st.session_state["active_video"] = result.video_id
+                prob = result.language_probability
+                prob_txt = f" (p={prob:.2f})" if isinstance(prob, (int, float)) else ""
+                q = result.quality_score
+                q_txt = f" · quality `{q:.2f}`" if isinstance(q, (int, float)) else ""
                 st.success(
-                    f"**{result.title}** is ready! "
-                    f"Language: `{result.language}` · {result.num_chunks} chunks · "
-                    f"{format_timestamp(result.duration)} · ASR on `{result.asr_device}`."
+                    f"**{result.title}** transcribed! "
+                    f"Language `{result.language}`{prob_txt} · {result.num_segments} segments · "
+                    f"{result.num_speakers} speaker(s){q_txt} · ASR on `{result.asr_device}`."
                 )
-                st.info("Switch to the **💬 Chat With Video** tab to ask questions.")
+                st.info("Open the **📄 Transcript** tab to read and download it.")
             elif result and not result.success:
                 st.error(f"Processing failed: {result.error}")
 
 
-# ----- Tab 2: Chat ---------------------------------------------------------- #
-with tab_chat:
-    st.header("Chat with your video")
+# ----- Tab 2: Transcript ---------------------------------------------------- #
+with tab_transcript:
+    st.header("Transcript")
     ready = svc.db.list_videos(ready_only=True)
     if not ready:
-        st.info("No processed videos yet. Process one in the **📥 Process Video** tab.")
+        st.info("No transcripts yet. Process a video in the **📥 Process Video** tab.")
     else:
-        labels = {f"{v['title'][:60]}  ·  {v['language'] or '?'}  ·  {v['video_id']}": v["video_id"]
+        labels = {f"{(v['title'] or v['video_id'])[:60]}  ·  {v['language'] or '?'}  ·  {v['video_id']}": v
                   for v in ready}
-        default_idx = 0
-        active = st.session_state.get("active_video")
         keys = list(labels.keys())
-        if active:
-            for i, k in enumerate(keys):
-                if labels[k] == active:
-                    default_idx = i
-                    break
-        chosen_label = st.selectbox("Video", keys, index=default_idx)
-        video_id = labels[chosen_label]
+        active = st.session_state.get("active_video")
+        default_idx = next((i for i, k in enumerate(keys) if labels[k]["video_id"] == active), 0)
+        chosen = st.selectbox("Video", keys, index=default_idx)
+        v = labels[chosen]
 
-        # Per-video chat history.
-        hist_key = f"chat::{video_id}"
-        history = st.session_state.setdefault(hist_key, [])
+        tpath = v.get("transcript_path")
+        data = None
+        if tpath and Path(tpath).exists():
+            try:
+                data = json.loads(Path(tpath).read_text(encoding="utf-8"))
+            except Exception as exc:
+                st.error(f"Could not read transcript JSON: {exc}")
+        if not data:
+            st.warning("Transcript file not found on disk.")
+        else:
+            # Metadata row.
+            c1, c2, c3, c4, c5 = st.columns(5)
+            prob = data.get("language_probability")
+            c1.metric("Language", f"{data.get('language', '?')}",
+                      f"p={prob:.2f}" if isinstance(prob, (int, float)) else None)
+            c2.metric("Duration", _mmss(data.get("duration") or 0))
+            c3.metric("Segments", len(data.get("segments", [])))
+            c4.metric("Speakers", data.get("num_speakers", 1))
+            q = data.get("quality_score")
+            c5.metric("Quality", f"{q:.2f}" if isinstance(q, (int, float)) else "—")
 
-        for turn in history:
-            with st.chat_message(turn["role"]):
-                rtl_markdown(turn["content"])
-                if turn.get("citations"):
-                    with st.expander(f"📍 References ({len(turn['citations'])})"):
-                        for c in turn["citations"]:
-                            st.markdown(f"**({c['label']})** · score `{c['score']:.2f}`")
-                            rtl_markdown(c["text"])
-                            st.divider()
+            # Downloads.
+            d1, d2, d3 = st.columns(3)
+            for col, key, label, mime in (
+                (d1, "transcript_path", "⬇ JSON", "application/json"),
+                (d2, "srt_path", "⬇ SRT", "text/plain"),
+                (d3, "vtt_path", "⬇ VTT", "text/vtt"),
+            ):
+                p = v.get(key)
+                if p and Path(p).exists():
+                    col.download_button(
+                        label, data=Path(p).read_bytes(), file_name=Path(p).name,
+                        mime=mime, use_container_width=True,
+                    )
 
-        question = st.chat_input("Ask something about this video…")
-        if question:
-            history.append({"role": "user", "content": question})
-            with st.chat_message("user"):
-                rtl_markdown(question)
-            with st.chat_message("assistant"):
-                if not svc.llm.is_available():
-                    st.error("Ollama is not reachable — start it to get answers.")
-                else:
-                    with st.spinner("Searching the video & thinking…"):
-                        ans = svc.rag.answer(question, video_id)
-                    rtl_markdown(ans.answer)
-                    cites = [c.as_dict() for c in ans.citations]
-                    if cites:
-                        with st.expander(f"📍 References ({len(cites)})", expanded=True):
-                            for c in cites:
-                                st.markdown(f"**({c['label']})** · score `{c['score']:.2f}`")
-                                rtl_markdown(c["text"])
-                                st.divider()
-                    history.append({"role": "assistant", "content": ans.answer, "citations": cites})
+            st.divider()
+            multi = (data.get("num_speakers", 1) or 1) > 1
+            for seg in data.get("segments", []):
+                rng = f"{_mmss(seg['start'])} – {_mmss(seg['end'])}"
+                conf = seg.get("confidence")
+                low = seg.get("low_confidence", False)
+                head = f"`{rng}`"
+                if multi:
+                    head += f"  ·  **{seg.get('speaker', 'SPEAKER_00')}**"
+                if isinstance(conf, (int, float)):
+                    head += f"  ·  conf `{conf:.2f}`" + ("  ⚠️" if low else "")
+                st.markdown(head)
+                rtl_markdown(seg.get("text", ""), low=low)

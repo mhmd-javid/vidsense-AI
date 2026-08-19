@@ -11,9 +11,9 @@ import torch
 import torchaudio
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 
-from whisperx.audio import SAMPLE_RATE, load_audio
-from whisperx.utils import interpolate_nans, PUNKT_LANGUAGES
-from whisperx.schema import (
+from modules.whisperx.audio import SAMPLE_RATE, load_audio
+from modules.whisperx.utils import interpolate_nans, PUNKT_LANGUAGES
+from modules.whisperx.schema import (
     AlignedTranscriptionResult,
     SingleSegment,
     SingleAlignedSegment,
@@ -23,7 +23,7 @@ from whisperx.schema import (
 )
 import nltk
 from nltk.data import load as nltk_load
-from whisperx.log_utils import get_logger
+from modules.whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 

@@ -4,9 +4,9 @@ from pyannote.audio import Pipeline
 from typing import Optional, Union, List, Tuple
 import torch
 
-from whisperx.audio import load_audio, SAMPLE_RATE
-from whisperx.schema import TranscriptionResult, AlignedTranscriptionResult, ProgressCallback
-from whisperx.log_utils import get_logger
+from modules.whisperx.audio import load_audio, SAMPLE_RATE
+from modules.whisperx.schema import TranscriptionResult, AlignedTranscriptionResult, ProgressCallback
+from modules.whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 

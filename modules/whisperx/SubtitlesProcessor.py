@@ -1,5 +1,5 @@
 import math
-from whisperx.conjunctions import get_conjunctions, get_comma
+from modules.whisperx.conjunctions import get_conjunctions, get_comma
 
 def normal_round(n):
     if n - math.floor(n) < 0.5:

@@ -1,18 +1,15 @@
 # =============================================================================
-# VideoAI — Central Configuration
+# VidSense — Central Configuration
 # -----------------------------------------------------------------------------
-# Everything swappable lives here. No model names or paths are hardcoded in
-# the application code. Paths are relative to the project root.
+# One clean Persian speech-to-text pipeline. Everything swappable lives here;
+# nothing (model names, thresholds, devices) is hardcoded in application code.
+# Paths are relative to the project root.
 #
 # HARDWARE NOTE (NVIDIA T1000, 4 GB VRAM):
-# HARDWARE NOTE (NVIDIA T1000, 4 GB VRAM):
-#   The three heavy models (ASR, embeddings, LLM) are NEVER co-resident.
-#     - ASR (faster-whisper) runs on CPU in int8 by default (device: auto falls
-#       back to CPU when the CUDA cuBLAS/cuDNN runtime is absent). small/int8 is
-#       faster than real time, so this costs 0 VRAM and stays fast.
-#     - Embeddings run on CPU -> zero VRAM contention.
-#     - The LLM (Ollama) is the only GPU consumer, and only during chat
-#       (~2.1 GB for qwen2.5:3b-instruct, leaving ~1 GB headroom).
+#   The heavy speech models (ASR, wav2vec2 alignment, pyannote diarization) are
+#   NEVER co-resident. The pipeline loads one, uses it, releases it (del + GC +
+#   torch.cuda.empty_cache), then loads the next. `device: auto` tries CUDA and
+#   transparently falls back to CPU int8 when no CUDA runtime is present.
 # =============================================================================
 
 app:
@@ -23,56 +20,87 @@ paths:
   videos_dir: data/videos
   audio_dir: data/audio
   transcripts_dir: data/transcripts
-  models_dir: models          # local Hugging Face cache for the embedding model
+  models_dir: models            # local Hugging Face / faster-whisper cache
 
-# ------------------------------------------------------------------ ASR -----
+# -------------------------------------------------------------- Download ----
+download:
+  max_height: 720               # cap video resolution (we only need the audio)
+  retries: 3
+  socket_timeout: 30
+  aparat_direct_api: true       # resolve Aparat direct MP4 via its JSON API first
+  insecure_ssl: true            # verify=False for domestic CDNs (Aparat/Telewebion)
+
+# ----------------------------------------------------------------- Audio ----
+audio:
+  sample_rate: 16000            # 16 kHz mono is what the ASR model expects
+
+# ------------------------------------------------------------ Preprocess ----
+# Faithful cleanup only — NEVER changes the content of the speech.
+preprocess:
+  enabled: true
+  loudnorm: true                # EBU R128 loudness normalization (safe, helps ASR)
+  highpass_hz: 0                # >0 enables a high-pass filter at N Hz (0 = off)
+  denoise: false                # afftdn denoise OFF by default (can distort speech)
+
+# ------------------------------------------------------------------- VAD ----
+vad:
+  method: pyannote              # pyannote (local weights, offline) | silero (torch.hub)
+  onset: 0.500                  # speech-onset probability threshold
+  offset: 0.363                 # speech-offset probability threshold
+  chunk_size: 30                # max length (s) of a merged speech window
+  model_fp: null                # null -> bundled modules/whisperx/assets/pytorch_model.bin
+
+# ------------------------------------------------------------------- ASR ----
 asr:
-  # tiny | base | small | medium   (large-v3 is intentionally NOT allowed here)
-  model_size: small
-  device: auto                # auto -> try CUDA, fall back to CPU automatically
-  compute_type: int8          # int8 (cpu) | int8_float16 (gpu) | float16 (gpu)
-  language: null              # null = auto-detect; set "fa" to force Persian
+  # tiny | base | small | medium | large-v3   (medium is the quality/speed sweet spot on CPU)
+  model_size: medium
+  device: auto                  # auto -> CUDA if usable, else CPU
+  compute_type: int8            # int8 (cpu) | int8_float16 / float16 (gpu)
+  language: fa                  # force Persian; null = auto-detect per file
+  batch_size: 8                 # batched inference window count (lower if RAM-bound)
   beam_size: 5
-  vad_filter: true            # voice-activity detection trims silence
-  download_root: models       # cache faster-whisper weights under models/
+  best_of: 5
+  patience: 1.0
+  temperatures: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]   # fallback decoding temperatures
+  compression_ratio_threshold: 2.4               # reject gibberish / repetition
+  log_prob_threshold: -1.0                       # reject low-confidence decodes
+  no_speech_threshold: 0.6
+  condition_on_previous_text: false              # avoids hallucination drift
+  initial_prompt: null          # optional Persian priming text
+  suppress_numerals: false      # true -> spell numbers instead of digits
+  download_root: models
 
-# -------------------------------------------------------------- Chunking ----
-chunking:
-  target_seconds: 30          # aim to merge raw segments into ~30s chunks
-  max_seconds: 45             # never let a chunk exceed this duration
-  max_chars: 700              # ...or this many characters
-  min_chars: 40               # avoid tiny trailing fragments when possible
+# ------------------------------------------------------------- Alignment ----
+# wav2vec2 forced alignment -> word-level {word, start, end, score}.
+alignment:
+  enabled: true
+  model_name: null              # null -> auto (fa: jonatasgrosman/wav2vec2-large-xlsr-53-persian)
+  interpolate_method: nearest
+  return_char_alignments: false
 
-# ------------------------------------------------------------- Embedding ----
-embedding:
-  # Multilingual model with solid Persian coverage. Do NOT use English-only.
-  model_name: intfloat/multilingual-e5-small   # or intfloat/multilingual-e5-base
-  device: cpu                 # cpu keeps the 4 GB VRAM free for ASR / LLM
-  batch_size: 16
-  normalize: true             # L2-normalize -> cosine == dot product
-  # e5 models require these instruction prefixes to work well:
-  query_prefix: "query: "
-  passage_prefix: "passage: "
+# ----------------------------------------------------------- Diarization ----
+# Optional. Off by default; graceful fallback labels everything SPEAKER_00.
+diarization:
+  enabled: false
+  model_name: pyannote/speaker-diarization-community-1
+  hf_token: null                # required by the gated diarization model
+  num_speakers: null            # exact count if known
+  min_speakers: null
+  max_speakers: null
 
-# ----------------------------------------------------------- VectorStore ----
-vectorstore:
-  backend: numpy              # numpy (implemented) | chroma | faiss (future)
-  top_k: 5
+# ----------------------------------------------------------- Postprocess ----
+# Faithful normalization only. NO LLM, NO rewriting, NO new information.
+postprocess:
+  enabled: true
+  arabic_to_persian: true       # ي->ی , ك->ک  (+ Arabic kaf/yeh variants)
+  fix_zwnj: true                # tidy zero-width non-joiner / spacing
+  normalize_punctuation: true   # collapse repeated/space-padded punctuation
+  collapse_repeats: true        # merge immediately-repeated identical words
+  persian_digits: false         # false = keep digits as spoken/decoded
 
-# ------------------------------------------------------------------ LLM -----
-llm:
-  backend: ollama             # ollama (implemented) | llamacpp (future)
-  model: qwen2.5:3b-instruct  # swappable: any Ollama model tag
-  host: http://localhost:11434
-  temperature: 0.2
-  num_ctx: 4096
-  max_tokens: 1024
-  # "5m" keeps the model warm; "0" unloads it from VRAM after each response.
-  keep_alive: "5m"
-  request_timeout: 180
-
-# ------------------------------------------------------------------ RAG -----
-rag:
-  top_k: 5                    # how many chunks to retrieve as context
-  min_score: 0.10             # drop chunks below this cosine similarity
-  language: auto              # auto = answer in the question's language
+# ------------------------------------------------------------ Confidence ----
+confidence:
+  low_threshold: 0.5            # segments below this are flagged low_confidence
+  # weights blended into the per-segment score (renormalized over available signals)
+  weight_logprob: 0.6           # from ASR avg_logprob (exp)
+  weight_word_score: 0.4        # from wav2vec2 alignment word scores

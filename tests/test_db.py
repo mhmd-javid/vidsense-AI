@@ -1,9 +1,12 @@
-"""Unit tests for the SQLite storage layer (uses a temp DB, no models)."""
+"""Unit tests for the SQLite storage layer (temp DB, no models, no embeddings).
+
+The chat/RAG schema (chunks + embedding blobs) is gone; the DB now holds only
+video metadata, processing status, quality metrics, and pointers to the JSON /
+SRT / VTT transcript files.
+"""
 import sys
 import tempfile
 from pathlib import Path
-
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -20,10 +23,32 @@ def test_upsert_and_get_video():
     db.upsert_video("v1", title="Hello", source="u", source_type="url")
     v = db.get_video("v1")
     assert v["title"] == "Hello" and v["status"] == "pending"
-    # Update path preserves existing fields.
+    # Update path preserves existing fields and only overwrites what's passed.
     db.upsert_video("v1", duration=42.0)
     v = db.get_video("v1")
     assert v["title"] == "Hello" and v["duration"] == 42.0
+
+
+def test_transcript_metadata_roundtrip():
+    db = _fresh_db()
+    db.upsert_video("v1", title="x")
+    db.upsert_video(
+        "v1",
+        language="fa",
+        language_prob=0.98,
+        num_speakers=2,
+        quality_score=0.71,
+        transcript_path="/data/transcripts/v1.json",
+        srt_path="/data/transcripts/v1.srt",
+        vtt_path="/data/transcripts/v1.vtt",
+    )
+    v = db.get_video("v1")
+    assert v["language"] == "fa"
+    assert v["num_speakers"] == 2
+    assert abs(v["quality_score"] - 0.71) < 1e-9
+    assert v["transcript_path"].endswith("v1.json")
+    assert v["srt_path"].endswith("v1.srt")
+    assert v["vtt_path"].endswith("v1.vtt")
 
 
 def test_status_transitions():
@@ -36,40 +61,28 @@ def test_status_transitions():
     assert row["status"] == STATUS_ERROR and row["error"] == "boom"
 
 
-def test_chunks_roundtrip_with_embeddings():
+def test_list_videos_ready_only():
+    db = _fresh_db()
+    db.upsert_video("v1", title="a")
+    db.upsert_video("v2", title="b")
+    db.set_status("v2", STATUS_READY)
+    assert len(db.list_videos()) == 2
+    ready = db.list_videos(ready_only=True)
+    assert [r["video_id"] for r in ready] == ["v2"]
+
+
+def test_delete_video():
     db = _fresh_db()
     db.upsert_video("v1", title="x")
-    chunks = [
-        {"index": 0, "start": 0.0, "end": 10.0, "text": "چانک اول"},
-        {"index": 1, "start": 10.0, "end": 20.0, "text": "chunk two"},
-    ]
-    emb = np.random.rand(2, 8).astype(np.float32)
-    db.replace_chunks("v1", chunks, embeddings=emb, embedding_model="e5")
-    rows = db.get_chunks("v1")
-    assert len(rows) == 2
-    assert rows[0].text == "چانک اول"
-    assert rows[0].embedding is not None and rows[0].embedding.shape == (8,)
-    # Float32 blob survives the roundtrip.
-    assert np.allclose(rows[0].embedding, emb[0], atol=1e-6)
-    assert db.count_chunks("v1") == 2
-
-
-def test_replace_chunks_is_idempotent():
-    db = _fresh_db()
-    db.upsert_video("v1", title="x")
-    one = [{"start": 0.0, "end": 5.0, "text": "a"}]
-    db.replace_chunks("v1", one)
-    db.replace_chunks("v1", one)  # replace, not append
-    assert db.count_chunks("v1") == 1
-
-
-def test_delete_video_cascades_chunks():
-    db = _fresh_db()
-    db.upsert_video("v1", title="x")
-    db.replace_chunks("v1", [{"start": 0, "end": 1, "text": "a"}])
     db.delete_video("v1")
     assert db.get_video("v1") is None
-    assert db.count_chunks("v1") == 0
+
+
+def test_no_embedding_api():
+    """The embedding/chunk API must be fully removed."""
+    db = _fresh_db()
+    for gone in ("replace_chunks", "get_chunks", "count_chunks"):
+        assert not hasattr(db, gone)
 
 
 if __name__ == "__main__":
