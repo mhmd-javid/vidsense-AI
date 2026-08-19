@@ -110,3 +110,28 @@ confidence:
   # weights blended into the per-segment score (renormalized over available signals)
   weight_logprob: 0.6           # from ASR avg_logprob (exp)
   weight_word_score: 0.4        # from wav2vec2 alignment word scores
+
+# -------------------------------------------------- LLM post-processing ----
+# OPTIONAL, OFF BY DEFAULT. Runs strictly AFTER Persian normalization, per
+# segment, via the already-running local Ollama server (an HTTP call — no new
+# Python dependency, no model download). It only fixes Persian spelling /
+# homophone confusions / broken words / obvious punctuation WITHIN a segment.
+#
+# Guarantees enforced in code (modules/postprocess/llm_correct.py), not just
+# the prompt:
+#   * Per-segment: each segment's text is corrected in isolation, so existing
+#     start/end timestamps, word alignment and speaker labels never move.
+#   * The original text is NEVER overwritten. The corrected version is stored
+#     alongside it as `text_corrected` (rollback + comparison always available).
+#   * Similarity guard: if > max_word_change_ratio of the words changed, the
+#     LLM output is discarded and the original text is kept for that segment.
+#   * Timeout / error / Ollama unavailable -> keep original, never crash.
+# When enabled=false the module is not even imported: behavior is byte-identical.
+llm_postprocess:
+  enabled: false
+  provider: ollama
+  model: qwen2.5:3b
+  endpoint: http://localhost:11434
+  temperature: 0
+  timeout_seconds: 15
+  max_word_change_ratio: 0.3

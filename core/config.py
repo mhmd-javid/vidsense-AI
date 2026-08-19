@@ -127,6 +127,22 @@ class ConfidenceSection:
 
 
 @dataclass
+class LLMPostprocessSection:
+    """Optional per-segment LLM spell/word correction (runs AFTER normalization).
+
+    Disabled by default. When ``enabled`` is False the module is never imported
+    or called, so pipeline behavior is byte-identical to the pre-LLM pipeline.
+    """
+    enabled: bool = False
+    provider: str = "ollama"
+    model: str = "qwen2.5:3b"
+    endpoint: str = "http://localhost:11434"
+    temperature: float = 0.0
+    timeout_seconds: int = 15
+    max_word_change_ratio: float = 0.3
+
+
+@dataclass
 class Config:
     app: AppSection = field(default_factory=AppSection)
     paths: PathsSection = field(default_factory=PathsSection)
@@ -139,6 +155,7 @@ class Config:
     diarization: DiarizationSection = field(default_factory=DiarizationSection)
     postprocess: PostprocessSection = field(default_factory=PostprocessSection)
     confidence: ConfidenceSection = field(default_factory=ConfidenceSection)
+    llm_postprocess: LLMPostprocessSection = field(default_factory=LLMPostprocessSection)
 
     # -- absolute, resolved paths ------------------------------------------
     @property
@@ -205,6 +222,9 @@ def load_config(path: str | Path | None = None) -> Config:
         diarization=_build_section(DiarizationSection, raw.get("diarization", {})),
         postprocess=_build_section(PostprocessSection, raw.get("postprocess", {})),
         confidence=_build_section(ConfidenceSection, raw.get("confidence", {})),
+        llm_postprocess=_build_section(
+            LLMPostprocessSection, raw.get("llm_postprocess", {})
+        ),
     )
     cfg.ensure_dirs()
     return cfg

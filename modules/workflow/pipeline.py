@@ -257,6 +257,27 @@ class ProcessingPipeline:
         result["language"] = language
         result["language_probability"] = result.get("language_probability")
         normalize_transcript(result, self.cfg.postprocess)
+
+        # --- 8b. Optional LLM spell/word correction (per-segment; faithful) --
+        # Runs strictly AFTER normalization. Stores each corrected string as
+        # `text_corrected` beside the untouched original `text`; timestamps,
+        # words, alignment and speaker labels are never touched. Off by default:
+        # when disabled the module is not even imported, so behavior is
+        # byte-identical to the pre-LLM pipeline.
+        if self.cfg.llm_postprocess.enabled:
+            from modules.postprocess.llm_correct import correct_transcript
+
+            self._emit(progress_cb, "postprocess", "LLM correcting Persian text…", None)
+            llm_stats = correct_transcript(result, self.cfg.llm_postprocess)
+            self._emit(
+                progress_cb,
+                "postprocess",
+                f"LLM corrected {llm_stats['corrected']}/{llm_stats['total']} "
+                f"segment(s); {llm_stats['rejected_similarity']} kept original "
+                f"(similarity guard)",
+                None,
+            )
+
         score_transcript(result, self.cfg.confidence)
 
         # --- 10. Assemble + persist ---------------------------------------

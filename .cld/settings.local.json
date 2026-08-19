@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/videoAI/**)",
+      "Bash(venv/Scripts/python.exe -m py_compile app/streamlit_app.py core/*.py modules/*/*.py tests/*.py)",
+      "Bash(PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 venv/Scripts/python.exe -c ' *)",
+      "Bash(PYTHONUTF8=1 venv/Scripts/python.exe -m streamlit run app/streamlit_app.py --server.headless true --server.port 8532 --browser.gatherUsageStats false)",
+      "Bash(echo \"launched pid $!\")",
+      "Bash(curl -s -o /dev/null -w \"health: %{http_code}\\\\n\" http://localhost:8532/_stcore/health)",
+      "Bash(curl -s -o /dev/null -w \"index : %{http_code}\\\\n\" http://localhost:8532/)",
+      "Read(//tmp/**)",
+      "Bash(python -m pip list)",
+      "Bash(python -c \"import torch; print\\('torch', torch.__version__, 'cuda_available', torch.cuda.is_available\\(\\)\\)\")",
+      "Bash(python -c \"import ctranslate2; print\\('ct2', ctranslate2.__version__, 'cuda_devices', ctranslate2.get_cuda_device_count\\(\\)\\)\")",
+      "Bash(nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv,noheader)",
+      "Bash(python -c \"import os; print\\('HF_TOKEN set:', bool\\(os.environ.get\\('HF_TOKEN'\\) or os.environ.get\\('HUGGING_FACE_HUB_TOKEN'\\)\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(python -c \"import torch; print\\('torch', torch.__version__\\)\")",
+      "Bash(python -c \"import faster_whisper; print\\('fw ok'\\)\")",
+      "Bash(python -c \"import ctranslate2; print\\('ct2 ok'\\)\")",
+      "Bash(python -c \"import pyannote.audio; print\\('pyannote ok'\\)\")",
+      "Bash(python -c \"import numpy; print\\('numpy', numpy.__version__\\)\")",
+      "Bash(venv/Scripts/python -m pip list)",
+      "Bash(python -m pytest tests/test_db.py -q)",
+      "Bash(export HF_HUB_DISABLE_SYMLINKS_WARNING=1)",
+      "Bash(python scripts/transcribe.py --file data/videos/baseline_small.mp4 --model small --device cpu --no-align)",
+      "Bash(awk 'NR>2 {print $5, $NF}')",
+      "Bash(tasklist)",
+      "Bash(cd *)",
+      "Bash(echo *)",
+      "Bash(py *)"
+    ]
+  }
+}

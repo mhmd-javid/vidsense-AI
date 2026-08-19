@@ -38,15 +38,21 @@ def _clean_word(w: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _clean_segment(seg: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    out: Dict[str, Any] = {
         "speaker": seg.get("speaker") or DEFAULT_SPEAKER,
         "start": round(float(seg.get("start", 0.0)), 3),
         "end": round(float(seg.get("end", 0.0)), 3),
         "text": (seg.get("text") or "").strip(),
-        "confidence": seg.get("confidence"),
-        "low_confidence": bool(seg.get("low_confidence", False)),
-        "words": [_clean_word(w) for w in (seg.get("words") or [])],
     }
+    # Optional LLM-corrected text, stored beside the untouched original. Present
+    # only when llm_postprocess ran; absent otherwise, so output is unchanged
+    # when the feature is disabled.
+    if seg.get("text_corrected") is not None:
+        out["text_corrected"] = (seg.get("text_corrected") or "").strip()
+    out["confidence"] = seg.get("confidence")
+    out["low_confidence"] = bool(seg.get("low_confidence", False))
+    out["words"] = [_clean_word(w) for w in (seg.get("words") or [])]
+    return out
 
 
 def assemble(
