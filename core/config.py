@@ -134,12 +134,16 @@ class LLMPostprocessSection:
     or called, so pipeline behavior is byte-identical to the pre-LLM pipeline.
     """
     enabled: bool = False
-    provider: str = "ollama"
-    model: str = "qwen2.5:3b"
+    provider: str = "ollama"           # "ollama" | "openrouter"
+    model: str = "qwen2.5:7b"          # Ollama model tag (used when provider == "ollama")
     endpoint: str = "http://localhost:11434"
     temperature: float = 0.0
-    timeout_seconds: int = 15
-    max_word_change_ratio: float = 0.3
+    timeout_seconds: int = 120         # generous for a 7B cold-start on CPU (>= 60)
+    max_word_change_ratio: float = 0.6  # loosened so short 1–2 word fixes aren't rejected
+    # OpenRouter (used only when provider == "openrouter"). The API key is read
+    # at runtime from a local text file so it is never committed to the repo.
+    openrouter_model: str = "qwen/qwen-2.5-7b-instruct"
+    openrouter_key_path: str = ""      # absolute path to a text file holding the API key
 
 
 @dataclass

@@ -128,10 +128,15 @@ confidence:
 #   * Timeout / error / Ollama unavailable -> keep original, never crash.
 # When enabled=false the module is not even imported: behavior is byte-identical.
 llm_postprocess:
-  enabled: false
-  provider: ollama
-  model: qwen2.5:3b
+  enabled: true
+  provider: ollama              # "ollama" | "openrouter" — swap here, no code change
+  model: qwen2.5:7b             # Ollama model tag (used when provider: ollama)
   endpoint: http://localhost:11434
   temperature: 0
-  timeout_seconds: 15
-  max_word_change_ratio: 0.3
+  timeout_seconds: 120          # generous for a 7B cold-start on CPU (>= 60)
+  max_word_change_ratio: 0.6    # loosened so short 1–2 word fixes aren't rejected
+  # --- OpenRouter (used only when provider: openrouter) --------------------
+  # The key is read at runtime from a local file (never commit API keys). Put
+  # the key on the first line of that file and point openrouter_key_path at it.
+  openrouter_model: "qwen/qwen-2.5-7b-instruct"
+  openrouter_key_path: ""       # e.g. C:/Users/you/.secrets/openrouter_key.txt

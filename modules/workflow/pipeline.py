@@ -1,15 +1,15 @@
 """Deterministic end-to-end Persian transcription pipeline.
 
-    URL/upload → download → extract → preprocess → VAD/segment → ASR →
-    align → diarize → post-process → confidence → persist (JSON/SRT/VTT + DB)
+    URL/upload -> download -> extract -> preprocess -> VAD/segment -> ASR ->
+    align -> diarize -> post-process -> confidence -> persist (JSON/SRT/VTT + DB)
 
 A plain, readable sequence of stages over a shared ``context`` with a
-``progress_cb`` for the UI — no agents, no LangGraph. Each stage is small and
+``progress_cb`` for the UI -- no agents, no LangGraph. Each stage is small and
 observable.
 
-VRAM discipline (T1000, 4 GB — models never co-resident): every heavy model is
-``load → process → unload`` before the next. Order of heavy loads:
-VAD (tiny) → ASR (medium) → wav2vec2 alignment → pyannote diarization, each
+VRAM discipline (T1000, 4 GB -- models never co-resident): every heavy model is
+``load -> process -> unload`` before the next. Order of heavy loads:
+VAD (tiny) -> ASR (medium) -> wav2vec2 alignment -> pyannote diarization, each
 released before the next. On CPU this still bounds RAM. The audio is decoded to
 a numpy array **once** and reused by every stage (so WhisperX never shells out
 to a bare ``ffmpeg``).
@@ -141,7 +141,7 @@ class ProcessingPipeline:
         progress_cb: ProgressCb = None,
     ) -> ProcessingResult:
         # --- 1. Ingest ----------------------------------------------------
-        self._emit(progress_cb, "download", "Fetching video…", None)
+        self._emit(progress_cb, "download", "Fetching video...", None)
         if source_kind == "url":
             ingest: IngestResult = self.downloader.download_url(source)
         elif source_kind == "local":
@@ -165,7 +165,7 @@ class ProcessingPipeline:
 
         # --- 2. Extract 16 kHz mono WAV -----------------------------------
         self.db.set_status(video_id, dbmod.STATUS_EXTRACTING)
-        self._emit(progress_cb, "extract", "Extracting 16 kHz mono audio…", None)
+        self._emit(progress_cb, "extract", "Extracting 16 kHz mono audio...", None)
         audio_res = self.extractor.extract(ingest.filepath, video_id)
         duration = audio_res.duration or ingest.duration or 0.0
         self.db.upsert_video(video_id, audio_path=audio_res.audio_path, duration=duration)
@@ -173,7 +173,7 @@ class ProcessingPipeline:
 
         # --- 3. Preprocess (faithful) -------------------------------------
         self.db.set_status(video_id, dbmod.STATUS_PREPROCESSING)
-        self._emit(progress_cb, "preprocess", "Cleaning audio…", None)
+        self._emit(progress_cb, "preprocess", "Cleaning audio...", None)
         clean_path = self.preprocessor.process(audio_res.audio_path, video_id)
         self._emit(progress_cb, "preprocess", "Audio preprocessed", 1.0)
 
@@ -184,7 +184,7 @@ class ProcessingPipeline:
 
         # --- 4. VAD + segmentation (tiny model; released before ASR) ------
         self.db.set_status(video_id, dbmod.STATUS_VAD)
-        self._emit(progress_cb, "vad", "Detecting speech regions…", None)
+        self._emit(progress_cb, "vad", "Detecting speech regions...", None)
         vad_windows = self._run_vad(audio)
         from modules.vad import segmenter as seg
 
@@ -197,9 +197,9 @@ class ProcessingPipeline:
             f"{stats['num_speech_regions']} speech region(s)", 1.0,
         )
 
-        # --- 5. ASR (load → transcribe → UNLOAD) --------------------------
+        # --- 5. ASR (load -> transcribe -> UNLOAD) --------------------------
         self.db.set_status(video_id, dbmod.STATUS_TRANSCRIBING)
-        self._emit(progress_cb, "transcribe", "Transcribing…", None)
+        self._emit(progress_cb, "transcribe", "Transcribing...", None)
         from modules.asr.engine import ASREngine
 
         engine = ASREngine(self.cfg.asr, self.cfg.vad, self.cfg.models_dir_abs.as_posix())
@@ -210,16 +210,16 @@ class ProcessingPipeline:
             engine.unload()  # free before alignment
         num_segments = len(result.get("segments", []))
         language = result.get("language") or self.cfg.asr.language or "fa"
-        if vad_windows is None:  # ASR ran its own VAD — derive telemetry
+        if vad_windows is None:  # ASR ran its own VAD -- derive telemetry
             stats = seg.speech_stats(seg.windows_from_segments(result.get("segments", [])))
         self._emit(progress_cb, "transcribe", f"{num_segments} segments", 1.0)
 
         # Device for the remaining torch stages: follow ASR's actual device.
         torch_device = "cpu" if asr_device == "cpu" else _resolve_torch_device(self.cfg.asr.device)
 
-        # --- 6. Word alignment (load → align → UNLOAD) --------------------
+        # --- 6. Word alignment (load -> align -> UNLOAD) --------------------
         self.db.set_status(video_id, dbmod.STATUS_ALIGNING)
-        self._emit(progress_cb, "align", "Aligning words…", None)
+        self._emit(progress_cb, "align", "Aligning words...", None)
         from modules.alignment.aligner import WordAligner
 
         aligner = WordAligner(
@@ -233,9 +233,9 @@ class ProcessingPipeline:
             aligner.unload()
         self._emit(progress_cb, "align", "Alignment done", 1.0)
 
-        # --- 7. Diarization (optional; graceful; load → run → UNLOAD) -----
+        # --- 7. Diarization (optional; graceful; load -> run -> UNLOAD) -----
         self.db.set_status(video_id, dbmod.STATUS_DIARIZING)
-        self._emit(progress_cb, "diarize", "Identifying speakers…", None)
+        self._emit(progress_cb, "diarize", "Identifying speakers...", None)
         from modules.diarization.diarizer import SpeakerDiarizer
 
         diarizer = SpeakerDiarizer(
@@ -250,7 +250,7 @@ class ProcessingPipeline:
 
         # --- 8. Post-process (faithful) + 9. confidence -------------------
         self.db.set_status(video_id, dbmod.STATUS_POSTPROCESSING)
-        self._emit(progress_cb, "postprocess", "Normalizing Persian text…", None)
+        self._emit(progress_cb, "postprocess", "Normalizing Persian text...", None)
         from modules.postprocess.persian import normalize_transcript
         from modules.confidence.scorer import score_transcript
 
@@ -265,9 +265,19 @@ class ProcessingPipeline:
         # when disabled the module is not even imported, so behavior is
         # byte-identical to the pre-LLM pipeline.
         if self.cfg.llm_postprocess.enabled:
+            lp = self.cfg.llm_postprocess
+            active_model = lp.model if lp.provider == "ollama" else lp.openrouter_model
+            logger.info(
+                "[postprocess] LLM correction started (provider=%s, model=%s, "
+                "timeout=%ds, max_word_change_ratio=%.2f)",
+                lp.provider,
+                active_model,
+                lp.timeout_seconds,
+                lp.max_word_change_ratio,
+            )
             from modules.postprocess.llm_correct import correct_transcript
 
-            self._emit(progress_cb, "postprocess", "LLM correcting Persian text…", None)
+            self._emit(progress_cb, "postprocess", "LLM correcting Persian text...", None)
             llm_stats = correct_transcript(result, self.cfg.llm_postprocess)
             self._emit(
                 progress_cb,

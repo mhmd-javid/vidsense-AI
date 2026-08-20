@@ -46,9 +46,6 @@ logger = get_logger(__name__)
 # --------------------------------------------------------------------------- #
 # Prompt
 # --------------------------------------------------------------------------- #
-# Strict instruction: the model must return ONLY the corrected segment text.
-# The code still validates and guards the reply — this prompt just makes the
-# common case behave.
 _SYSTEM_PROMPT = (
     "You are a Persian (Farsi) spelling corrector for speech-to-text output. "
     "You receive ONE short Persian segment that may contain spelling mistakes, "
@@ -74,8 +71,7 @@ _SYSTEM_PROMPT = (
 # Ollama transport (stdlib only)
 # --------------------------------------------------------------------------- #
 def _ollama_generate(cfg: LLMPostprocessSection, prompt: str) -> Optional[str]:
-    """One deterministic ``/api/generate`` call. Returns the raw reply text, or
-    ``None`` on any failure (timeout, connection refused, bad JSON, ...)."""
+    """One deterministic ``/api/generate`` call."""
     url = cfg.endpoint.rstrip("/") + "/api/generate"
     body = {
         "model": cfg.model,
@@ -92,11 +88,71 @@ def _ollama_generate(cfg: LLMPostprocessSection, prompt: str) -> Optional[str]:
         with urllib.request.urlopen(req, timeout=cfg.timeout_seconds) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("response", "")
-    except Exception as exc:  # timeout / URLError / JSON / anything — never raise
+    except Exception as exc:
         logger.warning(
-            "LLM correction call failed (%s: %s) — keeping original text.",
-            type(exc).__name__,
-            exc,
+            "[llm] Ollama call failed (%s: %s) — keeping original text.",
+            type(exc).__name__, exc,
+        )
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# OpenRouter transport (stdlib only)
+# --------------------------------------------------------------------------- #
+_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+def _read_openrouter_key(cfg: LLMPostprocessSection) -> Optional[str]:
+    """Read the OpenRouter API key from ``cfg.openrouter_key_path``."""
+    path = (getattr(cfg, "openrouter_key_path", "") or "").strip()
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            key = fh.read().strip()
+    except OSError:
+        return None
+    return key or None
+
+
+def _openrouter_generate(cfg: LLMPostprocessSection, prompt: str) -> Optional[str]:
+    """One chat-completion call to OpenRouter."""
+    key = _read_openrouter_key(cfg)
+    if key is None:
+        logger.error(
+            "[llm] provider=openrouter but no usable API key at openrouter_key_path=%r",
+            getattr(cfg, "openrouter_key_path", ""),
+        )
+        return None
+    body = {
+        "model": cfg.openrouter_model,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": float(cfg.temperature),
+        "max_tokens": 256,
+    }
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        _OPENROUTER_URL,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:8501",
+            "X-Title": "VidSense",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=cfg.timeout_seconds) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return payload["choices"][0]["message"]["content"]
+    except Exception as exc:
+        logger.warning(
+            "[llm] OpenRouter call failed (%s: %s) — keeping original text.",
+            type(exc).__name__, exc,
         )
         return None
 
@@ -104,23 +160,18 @@ def _ollama_generate(cfg: LLMPostprocessSection, prompt: str) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 # Reply validation
 # --------------------------------------------------------------------------- #
-# One layer of surrounding quotes/backticks the model may wrap around the text.
 _QUOTE_PAIRS = [
     ('"', '"'),
     ("'", "'"),
-    ("«", "»"),  # « »
-    ("“", "”"),  # “ ”
-    ("‘", "’"),  # ‘ ’
+    ("«", "»"),
+    ("“", "”"),
+    ("‘", "’"),
     ("`", "`"),
 ]
 
 
 def _strip_wrapping(text: str) -> str:
-    """Strip surrounding quote/backtick wrappers the model likes to add.
-
-    This is pure formatting removal (not a meaning change): a reply of
-    ``"صنایع"`` becomes ``صنایع``.
-    """
+    """Strip surrounding quote/backtick wrappers."""
     text = text.strip()
     changed = True
     while changed and len(text) >= 2:
@@ -133,13 +184,23 @@ def _strip_wrapping(text: str) -> str:
     return text
 
 
+def _persian_score(text: str) -> int:
+    """Count Persian/Arabic characters."""
+    return sum(1 for c in text if "\u0600" <= c <= "\u06FF")
+
+
 def _sanitize_reply(raw: Optional[str]) -> Optional[str]:
-    """Return a clean single-line corrected sentence, or ``None`` if the reply
-    looks like anything other than that (preamble, explanation, markdown block,
-    multiple lines, empty)."""
+    """Return a clean corrected sentence, or ``None`` if invalid.
+
+    Strips markdown, unwraps code blocks, and picks the line with the most
+    Persian characters (so a preamble does not invalidate the reply).
+    """
     if not raw:
         return None
     text = raw.strip()
+
+    # Strip inline markdown emphasis before any other processing.
+    text = text.replace("**", "").replace("__", "").replace("*", "").replace("_", "")
 
     # Unwrap a fenced code block if the whole reply is one.
     if text.startswith("```") and text.endswith("```") and len(text) >= 6:
@@ -147,24 +208,24 @@ def _sanitize_reply(raw: Optional[str]) -> Optional[str]:
         inner = inner.split("\n", 1)[-1] if "\n" in inner else inner
         text = inner.strip()
 
-    # A clean corrected sentence is exactly one non-empty line. More than one
-    # means the model added a preamble/explanation -> invalid.
+    # Collect non-empty lines.
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if len(lines) != 1:
+    if not lines:
         return None
 
-    line = _strip_wrapping(lines[0])
-    if not line or "```" in line:
+    # Prefer the line with the most Persian/Arabic characters.
+    best_line = max(lines, key=lambda ln: (_persian_score(ln), len(ln)))
+    best_line = _strip_wrapping(best_line)
+
+    if not best_line or "```" in best_line:
         return None
-    return line
+    return best_line
 
 
 # --------------------------------------------------------------------------- #
 # Similarity guard (word-level change ratio, stdlib difflib)
 # --------------------------------------------------------------------------- #
-# Stripped from tokens before comparison so the guard measures *word* changes,
-# not the punctuation the model is explicitly allowed to add.
-_PUNCT_STRIP = "،؛؟!?.:«»\"'`()[]…-—–"
+_PUNCT_STRIP = '\u060c\u061b\u061f!?.:\u00ab\u00bb"\'`()[]\u2026-\u2014\u2013'
 
 
 def _compare_tokens(text: str) -> List[str]:
@@ -172,11 +233,10 @@ def _compare_tokens(text: str) -> List[str]:
 
 
 def _word_change_ratio(original: str, corrected: str) -> float:
-    """Fraction of words that differ between the two texts, in ``[0, 1]``.
+    """Fraction of words that differ, in [0, 1].
 
-    Uses ``difflib`` (word-level edit distance): matched tokens are the longest
-    common subsequence; anything not matched counts as changed. Denominator is
-    the longer side, so both heavy additions and deletions push the ratio up.
+    For very short segments (≤2 words) a 0.5x discount is applied so that
+    single-word fixes like "مدن→معدن" are not rejected.
     """
     a = _compare_tokens(original)
     b = _compare_tokens(corrected)
@@ -185,7 +245,10 @@ def _word_change_ratio(original: str, corrected: str) -> float:
     matcher = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
     matched = sum(block.size for block in matcher.get_matching_blocks())
     denom = max(len(a), len(b), 1)
-    return (denom - matched) / denom
+    ratio = (denom - matched) / denom
+    if denom <= 2:
+        ratio = ratio * 0.5
+    return ratio
 
 
 # --------------------------------------------------------------------------- #
@@ -198,16 +261,40 @@ def correct_segment(text: str, cfg: LLMPostprocessSection) -> Dict[str, Any]:
     if not original.strip():
         return {"text_corrected": original, "status": "empty"}
 
-    raw = _ollama_generate(cfg, original)
-    if raw is None:
+    provider = (cfg.provider or "ollama").lower()
+    logger.info("[llm] input segment (%s): %s", provider, original)
+
+    if provider == "ollama":
+        raw = _ollama_generate(cfg, original)
+    elif provider == "openrouter":
+        raw = _openrouter_generate(cfg, original)
+    else:
+        logger.warning("[llm] unknown provider=%r — skipping.", provider)
         return {"text_corrected": original, "status": "error"}
 
+    if raw is None:
+        logger.warning("[llm] %s returned None for: %s", provider, original)
+        return {"text_corrected": original, "status": "error"}
+
+    logger.info("[llm] raw output (%s): %s", provider, raw)
     clean = _sanitize_reply(raw)
+    logger.info("[llm] sanitized: %s", clean)
+
     if clean is None:
+        logger.info("[llm] status: rejected_format")
         return {"text_corrected": original, "status": "rejected_format"}
 
     ratio = _word_change_ratio(original, clean)
+    logger.info(
+        "[llm] change_ratio: %.2f (threshold: %.2f)",
+        ratio, cfg.max_word_change_ratio,
+    )
+
     if ratio > cfg.max_word_change_ratio:
+        logger.info(
+            "[llm] status: rejected_similarity (ratio %.2f > %.2f)",
+            ratio, cfg.max_word_change_ratio,
+        )
         return {
             "text_corrected": original,
             "status": "rejected_similarity",
@@ -215,18 +302,14 @@ def correct_segment(text: str, cfg: LLMPostprocessSection) -> Dict[str, Any]:
         }
 
     status = "unchanged" if clean == original else "corrected"
+    logger.info("[llm] status: %s", status)
     return {"text_corrected": clean, "status": status, "change_ratio": ratio}
 
 
 def correct_transcript(
     result: Dict[str, Any], cfg: LLMPostprocessSection
 ) -> Dict[str, Any]:
-    """Add ``text_corrected`` to every segment of *result* in place.
-
-    ``text`` (the original ASR/normalized text) is left untouched. Returns a
-    stats dict for reporting. When disabled (or an unsupported provider) it is a
-    no-op that adds nothing to the segments.
-    """
+    """Add ``text_corrected`` to every segment of *result* in place."""
     stats = {
         "enabled": bool(cfg.enabled),
         "total": 0,
@@ -240,7 +323,9 @@ def correct_transcript(
 
     if not cfg.enabled:
         return stats
-    if (cfg.provider or "ollama").lower() != "ollama":
+
+    provider = (cfg.provider or "ollama").lower()
+    if provider not in ("ollama", "openrouter"):
         logger.warning(
             "llm_postprocess.provider=%r not supported; skipping LLM correction.",
             cfg.provider,
@@ -253,20 +338,19 @@ def correct_transcript(
         stats["total"] += 1
         original = seg.get("text", "") or ""
         outcome = correct_segment(original, cfg)
-        # Always set the field (defaults to the original) so it exists uniformly.
         seg["text_corrected"] = outcome["text_corrected"]
         status = outcome["status"]
         stats[status] = stats.get(status, 0) + 1
 
     logger.info(
-        "LLM correction: %d/%d corrected, %d unchanged, %d rejected(similarity), "
-        "%d rejected(format), %d errors, %d empty.",
-        stats["corrected"],
+        "[llm] stats: total=%d, corrected=%d, unchanged=%d, rejected_similarity=%d, "
+        "rejected_format=%d, errors=%d, empty=%d",
         stats["total"],
+        stats["corrected"],
         stats["unchanged"],
-        stats["rejected_similarity"],
-        stats["rejected_format"],
-        stats["errors"],
-        stats["empty"],
+        stats.get("rejected_similarity", 0),
+        stats.get("rejected_format", 0),
+        stats.get("errors", 0),
+        stats.get("empty", 0),
     )
     return stats
