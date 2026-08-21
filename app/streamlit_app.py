@@ -23,6 +23,7 @@ import streamlit as st  # noqa: E402
 from core.services import build_services  # noqa: E402
 from modules.ingestion.downloader import DownloadError  # noqa: E402
 from modules.storage import db as dbmod  # noqa: E402
+from modules.storage import transcript as tx  # noqa: E402
 from modules.workflow.pipeline import STAGES  # noqa: E402
 
 st.set_page_config(page_title="VidSense — Persian transcription", page_icon="🎧", layout="wide")
@@ -212,4 +213,4 @@ with tab_transcript:
                 if isinstance(conf, (int, float)):
                     head += f"  ·  conf `{conf:.2f}`" + ("  ⚠️" if low else "")
                 st.markdown(head)
-                rtl_markdown(seg.get("text", ""), low=low)
+                rtl_markdown(tx.display_text(seg), low=low)

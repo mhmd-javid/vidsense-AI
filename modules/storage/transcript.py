@@ -24,6 +24,22 @@ from core.utils import ensure_dir
 DEFAULT_SPEAKER = "SPEAKER_00"
 
 
+def display_text(seg: Dict[str, Any]) -> str:
+    """Text to render in human-facing output (SRT / VTT / UI / DB full_text).
+
+    Prefers the LLM-corrected text when it is present and non-empty, otherwise
+    the original ASR/normalized ``text``. When LLM correction is disabled the
+    ``text_corrected`` field is absent, so this returns the original text and
+    the output is byte-identical to the pre-LLM pipeline. The original ``text``
+    is always preserved verbatim in the JSON for comparison / rollback — this
+    helper only decides which field is *rendered*.
+    """
+    corrected = (seg.get("text_corrected") or "").strip()
+    if corrected:
+        return corrected
+    return (seg.get("text") or "").strip()
+
+
 def _clean_word(w: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {"word": w.get("word", "")}
     if w.get("start") is not None:
@@ -102,7 +118,7 @@ def _vtt_ts(seconds: float) -> str:
 
 
 def _line(seg: Dict[str, Any], multi_speaker: bool) -> str:
-    text = seg["text"]
+    text = display_text(seg)
     speaker = seg.get("speaker")
     if multi_speaker and speaker:
         return f"[{speaker}] {text}"

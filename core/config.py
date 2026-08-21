@@ -140,10 +140,16 @@ class LLMPostprocessSection:
     temperature: float = 0.0
     timeout_seconds: int = 120         # generous for a 7B cold-start on CPU (>= 60)
     max_word_change_ratio: float = 0.6  # loosened so short 1–2 word fixes aren't rejected
+    # Ollama runtime tuning — safe defaults for short ASR segments.
+    num_ctx: int = 2048                # context window (segments are short sentences)
+    num_predict: int = 256             # cap generated tokens (output ≈ one sentence)
+    keep_alive: str = "10m"            # keep the model resident between per-segment calls
     # OpenRouter (used only when provider == "openrouter"). The API key is read
-    # at runtime from a local text file so it is never committed to the repo.
+    # ONLY from a Windows environment variable at runtime (never from the repo
+    # or this config), so it is never committed. ``openrouter_key_env`` names
+    # that variable.
     openrouter_model: str = "qwen/qwen-2.5-7b-instruct"
-    openrouter_key_path: str = ""      # absolute path to a text file holding the API key
+    openrouter_key_env: str = "OPENROUTER_API_KEY"  # env var holding the API key
 
 
 @dataclass

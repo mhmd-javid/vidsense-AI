@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -47,23 +48,38 @@ logger = get_logger(__name__)
 # Prompt
 # --------------------------------------------------------------------------- #
 _SYSTEM_PROMPT = (
-    "You are a Persian (Farsi) spelling corrector for speech-to-text output. "
-    "You receive ONE short Persian segment that may contain spelling mistakes, "
-    "homophone confusions (ص/س/ث, ز/ذ/ض/ظ, "
-    "غ/ق, ع/ا/ح/ه), or broken/garbled words.\n\n"
-    "Your ONLY task:\n"
-    "- Fix Persian spelling errors and obviously broken words.\n"
-    "- Fix homophone confusions (e.g. سنایه→"
-    "صنایع، حولویت"
-    "→اولویت، نیرگ"
-    "اه→نیروگاه).\n"
-    "- Add only minimal, obvious punctuation for readability.\n\n"
-    "You MUST NOT summarize, rewrite, rephrase, translate, or change the meaning; "
-    "MUST NOT add or remove information or words; MUST NOT change the speaker's "
-    "style; and MUST NOT output any explanation, comment, preamble, quotes, or "
-    "markdown.\n\n"
-    "Output ONLY the corrected Persian sentence as plain text, nothing else. "
-    "If the input is already correct, return it unchanged."
+    "You are correcting the output of a Persian (Farsi) speech-to-text (ASR) "
+    "system. The input is NOT human-written text — it is a raw automatic "
+    "transcription of speech. Because it comes from speech recognition, it may "
+    "contain recognition errors: phonetically wrong or similar-sounding words, "
+    "missing letters, duplicated letters, wrong word boundaries, and wrong "
+    "spacing / نیم‌فاصله.\n\n"
+    "Your MAIN task is to fix these speech-recognition mistakes so the text "
+    "matches what the speaker actually said. This is ERROR CORRECTION, not "
+    "rewriting the writing style.\n\n"
+    "Examples of the kind of ASR errors to fix (wrong → correct):\n"
+    "  مدن → معدن\n"
+    "  صنایعه → صنایع\n"
+    "  شبکمون → شبکه\n"
+    "  محققق → محقق\n"
+    "  تنگهی → تنگه‌ی\n"
+    "  تبلیک → تبریک\n"
+    "  هستهی → هسته‌ای\n"
+    "  همهی → همه‌ی\n"
+    "  میآید → می‌آید\n\n"
+    "Rules:\n"
+    "- Fix a word ONLY when the sentence context clearly proves it is wrong.\n"
+    "- If you are unsure, keep the original word unchanged.\n"
+    "- Do NOT invent or add information; do NOT summarize; do NOT rewrite or "
+    "rephrase sentences; do NOT make the text more literary.\n"
+    "- Preserve the speaker's original wording and style.\n"
+    "- Preserve names of people, places, and organizations, and technical "
+    "terms, unless the correction is obvious from context.\n"
+    "- You may also fix obvious spacing / نیم‌فاصله and clearly needed "
+    "punctuation, but that is secondary to fixing recognition errors.\n\n"
+    "Output ONLY the corrected Persian transcript as plain text — no "
+    "explanation, no comment, no preamble, no quotes, no markdown. If the input "
+    "is already correct, return it unchanged."
 )
 
 
@@ -78,7 +94,16 @@ def _ollama_generate(cfg: LLMPostprocessSection, prompt: str) -> Optional[str]:
         "system": _SYSTEM_PROMPT,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": float(cfg.temperature)},
+        # Keep the model resident between per-segment calls so it is not
+        # reloaded for every segment of a transcript.
+        "keep_alive": cfg.keep_alive,
+        "options": {
+            "temperature": float(cfg.temperature),
+            # Short ASR segments: a small context and a capped output are enough
+            # and avoid a stray reply running away or a needlessly large window.
+            "num_ctx": int(cfg.num_ctx),
+            "num_predict": int(cfg.num_predict),
+        },
     }
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -103,15 +128,17 @@ _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def _read_openrouter_key(cfg: LLMPostprocessSection) -> Optional[str]:
-    """Read the OpenRouter API key from ``cfg.openrouter_key_path``."""
-    path = (getattr(cfg, "openrouter_key_path", "") or "").strip()
-    if not path:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            key = fh.read().strip()
-    except OSError:
-        return None
+    """Read the OpenRouter API key from a Windows environment variable.
+
+    The key value is read ONLY from the environment variable named by
+    ``cfg.openrouter_key_env`` (default ``OPENROUTER_API_KEY``) — never from the
+    config file or the repository, so it is never committed. Set it once, e.g.
+    in PowerShell::
+
+        setx OPENROUTER_API_KEY "sk-or-..."
+    """
+    env_name = (getattr(cfg, "openrouter_key_env", "") or "OPENROUTER_API_KEY").strip()
+    key = (os.environ.get(env_name) or "").strip()
     return key or None
 
 
@@ -120,8 +147,9 @@ def _openrouter_generate(cfg: LLMPostprocessSection, prompt: str) -> Optional[st
     key = _read_openrouter_key(cfg)
     if key is None:
         logger.error(
-            "[llm] provider=openrouter but no usable API key at openrouter_key_path=%r",
-            getattr(cfg, "openrouter_key_path", ""),
+            "[llm] provider=openrouter but environment variable %r is not set — "
+            "keeping original text.",
+            (getattr(cfg, "openrouter_key_env", "") or "OPENROUTER_API_KEY"),
         )
         return None
     body = {

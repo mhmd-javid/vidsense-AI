@@ -122,7 +122,9 @@ confidence:
 #   * Per-segment: each segment's text is corrected in isolation, so existing
 #     start/end timestamps, word alignment and speaker labels never move.
 #   * The original text is NEVER overwritten. The corrected version is stored
-#     alongside it as `text_corrected` (rollback + comparison always available).
+#     alongside it as `text_corrected` (rollback + comparison always available);
+#     the rendered outputs (SRT/VTT, UI, DB full_text) show `text_corrected`
+#     when present and fall back to the original otherwise.
 #   * Similarity guard: if > max_word_change_ratio of the words changed, the
 #     LLM output is discarded and the original text is kept for that segment.
 #   * Timeout / error / Ollama unavailable -> keep original, never crash.
@@ -135,8 +137,12 @@ llm_postprocess:
   temperature: 0
   timeout_seconds: 120          # generous for a 7B cold-start on CPU (>= 60)
   max_word_change_ratio: 0.6    # loosened so short 1–2 word fixes aren't rejected
+  # --- Ollama runtime tuning (safe defaults for short ASR segments) --------
+  num_ctx: 2048                 # context window; segments are short sentences
+  num_predict: 256              # cap generated tokens (output ≈ one sentence)
+  keep_alive: "10m"             # keep the model resident between per-segment calls
   # --- OpenRouter (used only when provider: openrouter) --------------------
-  # The key is read at runtime from a local file (never commit API keys). Put
-  # the key on the first line of that file and point openrouter_key_path at it.
+  # The API key is read ONLY from a Windows environment variable at runtime
+  # (never committed). Set it once, e.g.:  setx OPENROUTER_API_KEY "sk-or-..."
   openrouter_model: "qwen/qwen-2.5-7b-instruct"
-  openrouter_key_path: ""       # e.g. C:/Users/you/.secrets/openrouter_key.txt
+  openrouter_key_env: "OPENROUTER_API_KEY"   # name of the env var holding the key

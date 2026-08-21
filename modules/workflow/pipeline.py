@@ -296,7 +296,7 @@ class ProcessingPipeline:
         final["speech_seconds"] = stats["speech_seconds"]
         paths = tx.save_all(final, self.cfg.transcripts_dir_abs, video_id)
 
-        full_text = " ".join(s["text"] for s in final["segments"]).strip()
+        full_text = " ".join(tx.display_text(s) for s in final["segments"]).strip()
         self.db.upsert_video(
             video_id,
             language=final["language"],
