@@ -129,7 +129,7 @@ confidence:
 #     LLM output is discarded and the original text is kept for that segment.
 #   * Timeout / error / Ollama unavailable -> keep original, never crash.
 # When enabled=false the module is not even imported: behavior is byte-identical.
-lm_postprocess:
+llm_postprocess:
   enabled: true
   provider: ollama              # ✅ تغییر به Ollama (محلی و آفلاین)
   model: qwen2.5:7b             # مدل نصب شده در Ollama
