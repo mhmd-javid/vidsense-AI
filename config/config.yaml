@@ -129,20 +129,18 @@ confidence:
 #     LLM output is discarded and the original text is kept for that segment.
 #   * Timeout / error / Ollama unavailable -> keep original, never crash.
 # When enabled=false the module is not even imported: behavior is byte-identical.
-llm_postprocess:
+lm_postprocess:
   enabled: true
-  provider: ollama              # "ollama" | "openrouter" — swap here, no code change
-  model: qwen2.5:7b             # Ollama model tag (used when provider: ollama)
+  provider: ollama              # ✅ تغییر به Ollama (محلی و آفلاین)
+  model: qwen2.5:7b             # مدل نصب شده در Ollama
   endpoint: http://localhost:11434
   temperature: 0
-  timeout_seconds: 120          # generous for a 7B cold-start on CPU (>= 60)
-  max_word_change_ratio: 0.6    # loosened so short 1–2 word fixes aren't rejected
+  timeout_seconds: 180
+  max_word_change_ratio: 0.3
   # --- Ollama runtime tuning (safe defaults for short ASR segments) --------
   num_ctx: 2048                 # context window; segments are short sentences
-  num_predict: 256              # cap generated tokens (output ≈ one sentence)
+  num_predict: 512              # ✅ افزایش یافته (برای پاسخ‌های کامل‌تر)
   keep_alive: "10m"             # keep the model resident between per-segment calls
-  # --- OpenRouter (used only when provider: openrouter) --------------------
-  # The API key is read ONLY from a Windows environment variable at runtime
-  # (never committed). Set it once, e.g.:  setx OPENROUTER_API_KEY "sk-or-..."
-  openrouter_model: "qwen/qwen-2.5-7b-instruct"
-  openrouter_key_env: "OPENROUTER_API_KEY"   # name of the env var holding the key
+  # --- OpenRouter (غیرفعال، فقط برای مرجع) --------------------------------
+  openrouter_model: "qwen/qwen-2.5-7b-instruct:free"  # دیگر استفاده نمی‌شود
+  openrouter_key_env: "OPENROUTER_API_KEY"            # دیگر استفاده نمی‌شود
