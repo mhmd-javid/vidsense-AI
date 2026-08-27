@@ -47,19 +47,25 @@ logger = get_logger(__name__)
 # --------------------------------------------------------------------------- #
 # Prompt
 # --------------------------------------------------------------------------- #
-_SYSTEM_PROMPT = (
+SYSTEM_PROMPT = (
     "Fix Persian ASR errors. Change ONLY clear speech-recognition mistakes. "
-    "If unsure, keep original. Never rewrite, rephrase, or improve style.\n\n"
+    "If unsure, keep original. Never rewrite, rephrase, summarize, or improve style.\n\n"
+    "Before changing any word, carefully verify it against the surrounding context and choose "
+    "the most likely intended Persian word; do not make a correction based on spelling similarity alone.\n\n"
     "Error patterns (wrong → correct):\n"
     "مدن→معدن | صنایعه→صنایع | شبکمون→شبکه | محققق→محقق | تنگهی→تنگه‌ی\n"
     "تبلیک→تبریک | هستهی→هسته‌ای | همهی→همه‌ی | میآید→می‌آید | بیشت→بیشتر\n"
     "منصجم→منسجم | مصوبات→مصوبات (fix تشدید) | قرضدانی→قدردانی\n\n"
+    "NEVER change valid words just because another word is more common or sounds better.\n"
     "NEVER change:\n"
     "- Valid words: طراز, عصاره, ملت, طور, عیار\n"
     "- Names: خامنه‌ای, پزشکیان, ترامپ\n"
     "- Numbers, dates, quantities, technical terms\n\n"
-    "Output ONLY corrected text. No explanations, markdown, or quotes."
+    "Preserve the original meaning and the speaker's style.\n"
+    "Output ONLY corrected text. No explanations, markdown, quotes, or comments."
 )
+
+
 
 
 # --------------------------------------------------------------------------- #
